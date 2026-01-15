@@ -5,6 +5,7 @@ use bitcoin::{
     script, transaction,
 };
 
+#[derive(Debug)]
 pub enum SpillError {
     InvalidParams,
 }
@@ -15,6 +16,7 @@ pub struct ChannelParams {
     payee: PublicKey,
     capacity: Amount,
     funding_script: ScriptBuf,
+    refund_locktime: Sequence,
 }
 
 impl ChannelParams {
@@ -56,11 +58,10 @@ impl ChannelParams {
             payee,
             capacity,
             funding_script,
+            refund_locktime,
         })
     }
-}
 
-impl ChannelParams {
     pub fn funding_psbt(&self) -> Psbt {
         let script_hash = self.funding_script.wscript_hash();
 
@@ -101,8 +102,8 @@ impl Channel {
         }
     }
 
-    pub fn next_spend(&self, amount: Amount) -> (Psbt, Channel) {
-        assert!(amount <= self.params.capacity - self.sent);
+    pub fn next_spend(&self, amount: Amount, fee: Amount) -> (Psbt, Channel) {
+        assert!(amount + self.sent + fee <= self.params.capacity);
 
         let input = TxIn {
             previous_output: self.funding_outpoint,
@@ -117,7 +118,7 @@ impl Channel {
         };
 
         let change = TxOut {
-            value: self.params.capacity - (self.sent + amount),
+            value: self.params.capacity - (self.sent + amount + fee),
             script_pubkey: ScriptBuf::new_p2wpkh(&self.params.payer.wpubkey_hash().unwrap()),
         };
 
@@ -138,5 +139,71 @@ impl Channel {
         psbt.inputs[0].witness_utxo = Some(self.funding_utxo.clone());
 
         (psbt, next_channel_state)
+    }
+
+    pub fn finalize_payment_tx(&self, psbt: &mut Psbt) {
+        let mut witness = Witness::new();
+        witness.push(vec![]);
+
+        let input = &mut psbt.inputs[0];
+
+        let sig_payer = input.partial_sigs.get(&self.params.payer).unwrap();
+        let mut sig_payer_bytes = sig_payer.signature.serialize_der().to_vec();
+        sig_payer_bytes.push(sig_payer.sighash_type.to_u32() as u8);
+        witness.push(sig_payer_bytes);
+
+        let sig_payee = input.partial_sigs.get(&self.params.payee).unwrap();
+        let mut sig_payee_bytes = sig_payee.signature.serialize_der().to_vec();
+        sig_payee_bytes.push(sig_payee.sighash_type.to_u32() as u8);
+        witness.push(sig_payee_bytes);
+
+        witness.push(vec![1]); // OP_TRUE take OP_IF branch
+
+        let witness_script = input.witness_script.as_ref().unwrap();
+        witness.push(witness_script.to_bytes());
+
+        input.final_script_witness = Some(witness);
+        input.partial_sigs.clear();
+    }
+
+    pub fn refund_psbt(&self) -> Psbt {
+        let input = TxIn {
+            previous_output: self.funding_outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: self.params.refund_locktime,
+            witness: Witness::new(),
+        };
+
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![input],
+            output: vec![],
+        };
+
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+        psbt.inputs[0].witness_utxo = Some(self.funding_utxo.clone());
+        psbt.inputs[0].witness_script = Some(self.params.funding_script.clone());
+
+        psbt
+    }
+
+    pub fn finalize_refund_tx(&self, psbt: &mut Psbt) {
+        let mut witness = Witness::new();
+        let input = &mut psbt.inputs[0];
+
+        let sig_payer = input.partial_sigs.get(&self.params.payer).unwrap();
+        let mut sig_payer_bytes = sig_payer.signature.serialize_der().to_vec();
+        sig_payer_bytes.push(sig_payer.sighash_type.to_u32() as u8);
+        witness.push(sig_payer_bytes);
+
+        witness.push(vec![0]); // OP_FALSE take OP_ELSE branch
+
+        let witness_script = input.witness_script.as_ref().unwrap();
+        witness.push(witness_script.to_bytes());
+
+        input.final_script_witness = Some(witness);
+        input.partial_sigs.clear();
     }
 }
