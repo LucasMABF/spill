@@ -105,3 +105,56 @@ that fit well with my use case.
 ## 2026-01-13
 
 - Researched rust-bitcoin, read some documentation and the cookbook.
+
+## 2026-01-14
+
+- Started implementing the library and made some design decisions about the
+workflow and public interface.
+
+Here's what I've come up with:
+
+Since this library isn't meant to be a wallet, it shouldn't handle private keys
+or signing. That responsibility stays with the client. This keeps the library
+focused on providing tools for facilitating channel creation and management while
+giving clients flexibility and control. To support this, the library produces PSBTs
+and returns then to the client, so they can manage signing, additional inputs,
+outputs and fees.
+
+I chose to expose `Channel` and `ChannelParams` types to separate the
+static parameters from the channel's dynamic state, which allows
+`ChannelParams` to be cloned and reused. This also makes sense, as a `Channel`
+should only exist once a funding transaction has been created and broadcast, 
+which is handled using `ChannelParams`.
+
+These types define a channel and provide methods to create and interact with it
+on the network. The methods create the transactions necessary for this,
+and provide them as PSBTs, allowing the user to finalize and broadcast them.
+All methods act as helpers, as there still is a lot to be done by the user,
+but they take care of the heavy lifting specific to the channel's protocol.
+
+## 2026-01-15
+
+- Completed the main library functionality and created an example demonstrating
+client-side usage.
+
+This is a crude, hardcoded example of how the library might be used. It can
+create a channel, make payments, and close it. It also demonstrates how to
+handle the refund payment.
+
+- Tested on Signet
+
+First, I created and broadcast a funding transaction:
+
+> `f74d5a8db33c04678412c12e8fb5a9397a719ff46322fb92a3adf006a277e5c4`
+
+Then I made two payments and broadcast the last one,
+which amounted to the sum of both:
+
+> `e763872c3dba0768fed5ce82201e0a9f33369535394b16120f8773a5becdcf69`
+
+
+Now that it's at least functional, I plan to do some refactoring, fix
+error handling, improve the API, and make the library easier to use.
+After that, I could add some new features. It might be a good idea
+to try implementing it using Taproot, and allowing for different setups.
+
