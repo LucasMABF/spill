@@ -158,3 +158,8 @@ error handling, improve the API, and make the library easier to use.
 After that, I could add some new features. It might be a good idea
 to try implementing it using Taproot, and allowing for different setups.
 
+## 2026-01-19
+
+- Refactored the library code for proper error handling. 
+
+Mainly based on ideas from [this video](https://www.youtube.com/watch?v=KrZ0nmpNVOw)

@@ -58,14 +58,18 @@ fn main() {
 
     let ch = Channel::new(ch_params, funding_outpoint, funding_utxo);
 
-    let (mut psbt, next_ch) = ch.next_spend(Amount::from_sat(1000), Amount::from_sat(1000));
+    let (mut psbt, next_ch) = ch
+        .next_spend(Amount::from_sat(1000), Amount::from_sat(1000))
+        .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
 
     // send it to bob
 
     let ch = next_ch;
-    let (mut psbt, next_ch) = ch.next_spend(Amount::from_sat(4000), Amount::from_sat(1000));
+    let (mut psbt, next_ch) = ch
+        .next_spend(Amount::from_sat(4000), Amount::from_sat(1000))
+        .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
 
@@ -75,7 +79,7 @@ fn main() {
 
     sign_payment_tx(&bob, &mut psbt);
 
-    ch.finalize_payment_tx(&mut psbt);
+    ch.finalize_payment_tx(&mut psbt).unwrap();
 
     let payment_tx = psbt.extract_tx().unwrap();
     let payment_tx_hex = serialize_hex(&payment_tx);
@@ -89,7 +93,7 @@ fn main() {
 
     complete_refund_tx(&alice, &mut psbt);
     sign_refund_tx(&alice, &mut psbt);
-    ch.finalize_refund_tx(&mut psbt);
+    ch.finalize_refund_tx(&mut psbt).unwrap();
 
     let refund_tx = psbt.extract_tx().unwrap();
     let refund_tx_hex = serialize_hex(&refund_tx);
