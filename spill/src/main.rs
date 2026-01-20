@@ -10,7 +10,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use serde_json::Value;
-use spill::{Channel, ChannelParams};
+use spill::ChannelParams;
 
 struct Wallet {
     private_key: PrivateKey,
@@ -51,31 +51,27 @@ fn main() {
         vout: 0,
     };
 
-    let funding_utxo = TxOut {
-        value: Amount::from_int_btc(1),
-        script_pubkey: funding_tx.output[0].script_pubkey.clone(),
-    };
+    let mut ch = ch_params
+        .verify_funding_tx(&funding_tx, funding_outpoint)
+        .unwrap();
 
-    let ch = Channel::new(ch_params, funding_outpoint, funding_utxo);
-
-    let (mut psbt, next_ch) = ch
-        .next_spend(Amount::from_sat(1000), Amount::from_sat(1000))
+    let mut psbt = ch
+        .next_payment(Amount::from_sat(1000), Amount::from_sat(1000))
         .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
 
     // send it to bob
+    ch.apply_payment(&psbt).unwrap();
 
-    let ch = next_ch;
-    let (mut psbt, next_ch) = ch
-        .next_spend(Amount::from_sat(4000), Amount::from_sat(1000))
+    let mut psbt = ch
+        .next_payment(Amount::from_sat(4000), Amount::from_sat(1000))
         .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
 
     // send it to bob
-
-    let ch = next_ch;
+    ch.apply_payment(&psbt).unwrap();
 
     sign_payment_tx(&bob, &mut psbt);
 
