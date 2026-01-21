@@ -4,7 +4,7 @@ use bitcoin::{
     script,
 };
 
-use crate::SpillError;
+use crate::{ConfigError, SpillError};
 
 mod finalize;
 mod payment;
@@ -36,18 +36,18 @@ impl ChannelParams {
         refund_locktime: Sequence,
     ) -> Result<ChannelParams, SpillError> {
         if capacity == Amount::ZERO {
-            return Err(SpillError::InvalidCapacity);
+            return Err(SpillError::Config(ConfigError::InvalidCapacity));
         }
 
         if !(payer.compressed && payee.compressed) {
-            return Err(SpillError::UncompressedPublicKey);
+            return Err(SpillError::Config(ConfigError::UncompressedPublicKey));
         }
 
         if refund_locktime == Sequence::ZERO
             || refund_locktime == Sequence::from_height(0)
             || refund_locktime == Sequence::from_512_second_intervals(0)
         {
-            return Err(SpillError::InvalidRefundLocktime);
+            return Err(SpillError::Config(ConfigError::InvalidRefundLocktime));
         }
 
         let funding_script = script::Builder::new()

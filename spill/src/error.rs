@@ -4,118 +4,159 @@ use std::error::Error;
 
 #[non_exhaustive]
 #[derive(Debug)]
-pub enum SpillError {
+pub enum ConfigError {
+    InvalidCapacity,
     UncompressedPublicKey,
     InvalidRefundLocktime,
-    InvalidCapacity,
-    PaymentExceedsCapacity { available: Amount, required: Amount },
-    PsbtMissingSignature { public_key: PublicKey },
-    PsbtMissingWitnessScript,
-    FundingTxidMismatch,
-    FundingOutputNotFound,
-    FundingValueMismatch,
-    FundingScriptMismatch,
-    PaymentMultipleInputs,
-    PaymentMissingInput,
-    PaymentWrongInput,
-    PaymentMissingWitnessUtxo,
-    PaymentWitnessUtxoMismatch,
-    PaymentMissingWitnessScript,
-    PaymentWitnessScriptMismatch,
-    PaymentInvalidSequence,
-    PaymentNonZeroLocktime,
-    PaymentMissingPayeeOutput,
-    PaymentInvalidValue,
-    PaymentInvalidOutputSum,
-    PaymentMissingSignature,
-    PaymentInvalidSighash,
-    PaymentInvalidSignature,
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum FundingError {
+    TxidMismatch,
+    OutputNotFound,
+    ValueMismatch,
+    ScriptMismatch,
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum PaymentError {
+    ExceedsCapacity { available: Amount, required: Amount },
+    MultipleInputs,
+    MissingInput,
+    FundingOutpointMismatch,
+    MissingWitnessUtxo,
+    WitnessUtxoMismatch,
+    MissingWitnessScript,
+    WitnessScriptMismatch,
+    InvalidSequence,
+    NonZeroLocktime,
+    MissingPayeeOutput,
+    PaymentNotIncremental,
+    OutputsExceedFundingAmount,
+    MissingSignature,
+    InvalidSighash,
+    InvalidSignature,
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum FinalizeError {
+    MissingSignature { public_key: PublicKey },
+    MissingWitnessScript,
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum SpillError {
+    Config(ConfigError),
+    Funding(FundingError),
+    Payment(PaymentError),
+    Finalize(FinalizeError),
 }
 
 impl From<UncompressedPublicKeyError> for SpillError {
     fn from(_value: UncompressedPublicKeyError) -> Self {
-        Self::UncompressedPublicKey
+        Self::Config(ConfigError::UncompressedPublicKey)
     }
 }
 
 impl fmt::Display for SpillError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpillError::UncompressedPublicKey => write!(f, "public key must be compressed"),
-            SpillError::InvalidRefundLocktime => {
-                write!(f, "invalid refund locktime (must be greater than 0)")
-            }
-            SpillError::InvalidCapacity => write!(f, "channel capacity must be non-zero."),
-            SpillError::PaymentExceedsCapacity {
-                available,
-                required,
-            } => write!(
-                f,
-                "payment exceeds channel capacity (available: {}, required: {})",
-                available, required
-            ),
-            SpillError::PsbtMissingSignature { public_key } => {
-                write!(f, "PSBT is missing signature for public key {}", public_key)
-            }
-            SpillError::PsbtMissingWitnessScript => write!(f, "PSBT is missing witness script"),
-            SpillError::FundingTxidMismatch => {
-                write!(f, "funding transaction id does not match expected ")
-            }
-            SpillError::FundingOutputNotFound => write!(f, "funding transaction output not found"),
-            SpillError::FundingValueMismatch => write!(
-                f,
-                "funding transaction output value does not match expected"
-            ),
-            SpillError::FundingScriptMismatch => {
-                write!(f, "funding transaction output does not match expected")
-            }
-            SpillError::PaymentMultipleInputs => {
-                write!(f, "payment transaction has more than one input")
-            }
-            SpillError::PaymentMissingInput => write!(f, "payment transaction is missing input"),
-            SpillError::PaymentWrongInput => write!(
-                f,
-                "payment transaction does not reference funding transaction"
-            ),
-            SpillError::PaymentMissingWitnessUtxo => {
-                write!(f, "payment transaction missing witness utxo")
-            }
-            SpillError::PaymentWitnessUtxoMismatch => {
-                write!(f, "wrong payment transaction witness utxo")
-            }
-            SpillError::PaymentMissingWitnessScript => {
-                write!(f, "payment transaction missing witness script")
-            }
-            SpillError::PaymentWitnessScriptMismatch => {
-                write!(f, "wrong payment transaction witness script")
-            }
-            SpillError::PaymentInvalidSequence => {
-                write!(f, "payment transaction sequence must be MAX")
-            }
-            SpillError::PaymentNonZeroLocktime => {
-                write!(f, "payment transaction locktime must be zero")
-            }
-            SpillError::PaymentMissingPayeeOutput => {
-                write!(f, "payment transaction missing output to payee")
-            }
-            SpillError::PaymentInvalidValue => {
-                write!(
+            SpillError::Config(config_error) => match config_error {
+                ConfigError::InvalidCapacity => write!(f, "channel capacity must be non-zero."),
+                ConfigError::UncompressedPublicKey => write!(f, "public key must be compressed"),
+                ConfigError::InvalidRefundLocktime => {
+                    write!(f, "invalid refund locktime (must be greater than 0)")
+                }
+            },
+            SpillError::Funding(fundin_error) => match fundin_error {
+                FundingError::TxidMismatch => {
+                    write!(f, "funding transaction does not match expected id")
+                }
+                FundingError::OutputNotFound => write!(f, "funding transaction output not found"),
+                FundingError::ValueMismatch => write!(
                     f,
-                    "payee output value must be greater than previous payment"
-                )
-            }
-            SpillError::PaymentInvalidOutputSum => {
-                write!(f, "payment transaction outputs' values exceed input")
-            }
-            SpillError::PaymentMissingSignature => {
-                write!(f, "payment transaction missing payer's signature")
-            }
-            SpillError::PaymentInvalidSighash => {
-                write!(f, "payment transaction signature has invalid sighash")
-            }
-            SpillError::PaymentInvalidSignature => {
-                write!(f, "payment transaction signature is invalid")
-            }
+                    "funding transaction output value does not match expected"
+                ),
+                FundingError::ScriptMismatch => {
+                    write!(
+                        f,
+                        "funding transaction output script does not match expected"
+                    )
+                }
+            },
+            SpillError::Payment(payment_error) => match payment_error {
+                PaymentError::ExceedsCapacity {
+                    available,
+                    required,
+                } => write!(
+                    f,
+                    "payment exceeds channel capacity (available: {}, required: {})",
+                    available, required
+                ),
+                PaymentError::MultipleInputs => {
+                    write!(f, "payment transaction has more than one input")
+                }
+                PaymentError::MissingInput => write!(f, "payment transaction is missing input"),
+                PaymentError::FundingOutpointMismatch => write!(
+                    f,
+                    "payment transaction does not reference funding transaction"
+                ),
+                PaymentError::MissingWitnessUtxo => {
+                    write!(f, "payment transaction missing witness utxo")
+                }
+                PaymentError::WitnessUtxoMismatch => {
+                    write!(
+                        f,
+                        "payment transaction witness utxo does not match expected"
+                    )
+                }
+                PaymentError::MissingWitnessScript => {
+                    write!(f, "payment transaction missing witness script")
+                }
+                PaymentError::WitnessScriptMismatch => {
+                    write!(
+                        f,
+                        "payment transaction witness script does not match expected"
+                    )
+                }
+                PaymentError::InvalidSequence => {
+                    write!(f, "payment transaction sequence is not MAX")
+                }
+                PaymentError::NonZeroLocktime => {
+                    write!(f, "payment transaction uses non-final locktime")
+                }
+                PaymentError::MissingPayeeOutput => {
+                    write!(f, "payment transaction missing output to payee")
+                }
+                PaymentError::PaymentNotIncremental => {
+                    write!(
+                        f,
+                        "payee output value must be greater than previous payment"
+                    )
+                }
+                PaymentError::OutputsExceedFundingAmount => {
+                    write!(f, "payment transaction outputs exceed funding amount")
+                }
+                PaymentError::MissingSignature => {
+                    write!(f, "payment transaction missing payer's signature")
+                }
+                PaymentError::InvalidSighash => {
+                    write!(f, "payment transaction signature has invalid sighash")
+                }
+                PaymentError::InvalidSignature => {
+                    write!(f, "payment transaction signature is invalid")
+                }
+            },
+            SpillError::Finalize(finalize_error) => match finalize_error {
+                FinalizeError::MissingSignature { public_key } => {
+                    write!(f, "PSBT is missing signature for public key {}", public_key)
+                }
+                FinalizeError::MissingWitnessScript => write!(f, "PSBT is missing witness script"),
+            },
         }
     }
 }

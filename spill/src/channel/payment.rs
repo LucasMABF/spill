@@ -2,16 +2,16 @@ use bitcoin::{
     Amount, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, absolute, transaction,
 };
 
-use crate::{Channel, SpillError};
+use crate::{Channel, PaymentError, SpillError};
 
 impl Channel {
     pub fn next_payment(&self, amount: Amount, fee: Amount) -> Result<Psbt, SpillError> {
         let required = amount + self.sent + fee;
         if required > self.params.capacity {
-            return Err(SpillError::PaymentExceedsCapacity {
+            return Err(SpillError::Payment(PaymentError::ExceedsCapacity {
                 available: self.params.capacity,
                 required,
-            });
+            }));
         }
 
         let input = TxIn {
