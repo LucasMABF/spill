@@ -3,6 +3,18 @@ use bitcoin::{Psbt, ScriptBuf, Transaction, TxIn, TxOut, Witness, absolute, tran
 use crate::{Channel, ChannelParams};
 
 impl ChannelParams {
+    /// Constructs a funding PSBT for the channel.
+    ///
+    /// The returned PSBT represents the channel's funding transaction, which can
+    /// be completed, signed by the payer and later broadcast to fund the channel.
+    ///
+    /// # Details
+    ///
+    /// - The PSBT has no inputs; the caller must add inputs and account for fees
+    /// - The PSBT contains a single output paying the channel capacity to the
+    ///   channel's funding script.
+    /// - The witness script is set according to the channel's rules.
+    /// - The transaction has version 2 and a locktime of 0.
     pub fn funding_psbt(&self) -> Psbt {
         let script_hash = self.funding_script.wscript_hash();
 
@@ -27,6 +39,19 @@ impl ChannelParams {
 }
 
 impl Channel {
+    /// Constructs a refund PSBT for the channel.
+    ///
+    /// The returned PSBT can be completed and signed by the payer to
+    /// claim the channel's funds after the refund locktime has passed.
+    ///
+    /// # Details
+    ///
+    /// - The PSBT contains a single input referencing the channel's funding outpoint.
+    /// - The input's witness UTXO and witness script are set according to the
+    ///   channel's funding transaction.
+    /// - The PSBT has no outputs by default; the caller must add the refund output
+    ///   and account for fees.
+    /// - The transaction has version 2 and a locktime of 0.
     pub fn refund_psbt(&self) -> Psbt {
         let input = TxIn {
             previous_output: self.funding_outpoint,

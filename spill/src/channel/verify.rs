@@ -1,10 +1,25 @@
-use crate::{Channel, ChannelParams, FundingError, PaymentError, SpillError};
+use crate::{
+    Channel, ChannelParams, FundingError, PaymentError, SpillError, channel::payment::PaymentInfo,
+};
 use bitcoin::{
     Amount, EcdsaSighashType, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, absolute::LockTime,
     secp256k1, sighash::SighashCache,
 };
 
 impl ChannelParams {
+    /// Verifies a funding transaction against the channel parameters.
+    ///
+    /// Ensures that the provided transaction and outpoint match the channel's
+    /// expected funding transaction. If verification succeeds, returns a new
+    /// [`Channel`] initialized with the funding outpoint and UTXO.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `SpillError::Funding` variant if verification fails:
+    /// - `TxidMismatch`: Transaction ID does not match the funding outpoint.
+    /// - `OutputNotFound`: No output exists at the specified index.
+    /// - `ValueMismatch`: Output value does not match the channel capacity.
+    /// - `ScriptMismatch`: Output script does not match the channel's funding script.
     pub fn verify_funding_tx(
         &self,
         tx: &Transaction,
@@ -37,13 +52,32 @@ impl ChannelParams {
     }
 }
 
-pub struct PaymentInfo {
-    pub total: Amount,
-    pub current: Amount,
-    pub fee: Amount,
-}
-
 impl Channel {
+    /// Verifies a payment PSBT against the channel state.
+    ///
+    /// Ensures that the provided PSBT correctly represents a payment from the
+    /// payer to the payee according to the channel's rules. If verification
+    /// succeeds, returns a [`PaymentInfo`] containing the cumulative and
+    /// incremental amounts and the fee.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `SpillError::Payment` variant if verification fails:
+    /// - `MultipleInputs`: The PSBT contains more than one input.
+    /// - `MissingInput`: The PSBT has no inputs.
+    /// - `FundingOutpointMismatch`: The PSBT doesn't reference the funding outpoint.
+    /// - `MissingWitnessUtxo`: The input lacks a witness UTXO.
+    /// - `WitnessUtxoMismatch`: The witness UTXO does not match the channel funding UTXO.
+    /// - `MissingWitnessScript`: The input lacks a witness script.
+    /// - `WitnessScriptMismatch`: The witness script does not match the channel funding script.
+    /// - `InvalidSequence`: The input sequence is not MAX.
+    /// - `NonZeroLocktime`: The transaction locktime is not zero.
+    /// - `MissingPayeeOutput`: No output exists for the payee.
+    /// - `PaymentNotIncremental`: The payment does not increase the cumulative amount.
+    /// - `OutputsExceedFundingAmount`: The total outputs exceed the channel capacity.
+    /// - `MissingSignature`: No signature from the payer is present.
+    /// - `InvalidSighash`: The signature sighash type is unsupported (must be ALL or ALL|ANYONECANPAY).
+    /// - `InvalidSignature`: The payer's signature is invalid.
     pub fn verify_payment_psbt(&self, psbt: &Psbt) -> Result<PaymentInfo, SpillError> {
         if psbt.inputs.len() > 1 {
             return Err(SpillError::Payment(PaymentError::MultipleInputs));
