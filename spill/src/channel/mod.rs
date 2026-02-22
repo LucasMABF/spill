@@ -1,11 +1,10 @@
 use bitcoin::{
-    Amount, OutPoint, PublicKey, ScriptBuf, Sequence, TxOut,
-    opcodes::all::{OP_CHECKMULTISIG, OP_CHECKSIG, OP_CSV, OP_DROP, OP_ELSE, OP_ENDIF, OP_IF},
-    script,
+    Amount, OutPoint, PublicKey, ScriptPubKeyTag, TxOut, primitives::relative, script::ScriptBuf,
 };
 
-use crate::{ConfigError, SpillError};
+use crate::{ConfigError, SpillError, channel::backend::ChannelBackend};
 
+pub mod backend;
 mod finalize;
 mod payment;
 mod psbt;
@@ -31,12 +30,13 @@ pub use payment::PaymentInfo;
 /// to verify that a received funding transaction is valid
 /// under the agreed channel parameters.
 #[derive(Clone)]
-pub struct ChannelParams {
+pub struct ChannelParams<B: ChannelBackend + Clone> {
     payer: PublicKey,
     payee: PublicKey,
     capacity: Amount,
-    funding_script: ScriptBuf,
-    refund_locktime: Sequence,
+    script_pubkey: ScriptBuf<ScriptPubKeyTag>,
+    refund_lock_time: relative::LockTime,
+    backend: B,
 }
 
 /// Runtime state of an established Spillman channel.
@@ -53,14 +53,14 @@ pub struct ChannelParams {
 ///
 /// `Channel` exposes methods for the payer to construct payment PSBTs
 /// and refund transactions, and for the payee to verify and inspect received payments.
-pub struct Channel {
-    params: ChannelParams,
+pub struct Channel<B: ChannelBackend + Clone> {
+    params: ChannelParams<B>,
     funding_outpoint: OutPoint,
     funding_utxo: TxOut,
     sent: Amount,
 }
 
-impl ChannelParams {
+impl<B: ChannelBackend + Clone> ChannelParams<B> {
     /// Creates a new channel configuration for a unidirectional Spillman channel.
     ///
     /// Returns a `ChannelParams` struct if all parameters are valid, or a
@@ -70,50 +70,39 @@ impl ChannelParams {
     /// - `payer`: The payer's compressed public key.
     /// - `payee`: The payee's compressed public key.
     /// - `capacity`: The total channel capacity (must be non-zero).
-    /// - `refund_locktime`: Locktime used for the refund path (must be non-zero).
+    /// - `refund_lock_time`: Lock time used for the refund path (must be non-zero).
+    /// - `backend`: The type of transaction to be used. Implements trait [`ChannelBackend`].
     pub fn new(
         payer: PublicKey,
         payee: PublicKey,
         capacity: Amount,
-        refund_locktime: Sequence,
-    ) -> Result<ChannelParams, SpillError> {
+        refund_lock_time: relative::LockTime,
+        mut backend: B,
+    ) -> Result<ChannelParams<B>, SpillError> {
         if capacity == Amount::ZERO {
-            return Err(SpillError::Config(ConfigError::InvalidCapacity));
+            return Err(ConfigError::InvalidCapacity.into());
         }
 
         if !(payer.compressed && payee.compressed) {
-            return Err(SpillError::Config(ConfigError::UncompressedPublicKey));
+            return Err(ConfigError::UncompressedPublicKey.into());
         }
 
-        if refund_locktime == Sequence::ZERO
-            || refund_locktime == Sequence::from_height(0)
-            || refund_locktime == Sequence::from_512_second_intervals(0)
+        if refund_lock_time == relative::LockTime::ZERO
+            || refund_lock_time == relative::LockTime::from_height(0)
+            || refund_lock_time == relative::LockTime::from_512_second_intervals(0)
         {
-            return Err(SpillError::Config(ConfigError::InvalidRefundLocktime));
+            return Err(ConfigError::InvalidRefundLockTime.into());
         }
 
-        let funding_script = script::Builder::new()
-            .push_opcode(OP_IF)
-            .push_int(2)
-            .push_key(&payer)
-            .push_key(&payee)
-            .push_int(2)
-            .push_opcode(OP_CHECKMULTISIG)
-            .push_opcode(OP_ELSE)
-            .push_sequence(refund_locktime)
-            .push_opcode(OP_CSV)
-            .push_opcode(OP_DROP)
-            .push_key(&payer)
-            .push_opcode(OP_CHECKSIG)
-            .push_opcode(OP_ENDIF)
-            .into_script();
+        let script_pubkey = backend.script_pubkey(&payer, &payee, refund_lock_time)?;
 
         Ok(ChannelParams {
             payer,
             payee,
             capacity,
-            funding_script,
-            refund_locktime,
+            script_pubkey,
+            refund_lock_time,
+            backend,
         })
     }
 }

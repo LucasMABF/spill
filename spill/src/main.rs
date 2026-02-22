@@ -1,16 +1,18 @@
 use std::{fs, str::FromStr};
 
 use bitcoin::{
-    Address, Amount, EcdsaSighashType, Network, OutPoint, PrivateKey, Psbt, PublicKey, ScriptBuf,
-    Sequence, TxIn, TxOut, Witness,
+    Address, Amount, EcdsaSighashType, Network, OutPoint, PrivateKey, Psbt, PublicKey, Sequence,
+    TxIn, TxOut, Witness,
     consensus::encode::serialize_hex,
     ecdsa::Signature,
     psbt::{Input, Output},
+    relative,
+    script::{ScriptBuf, ScriptBufExt},
     secp256k1::{self, Message, SecretKey},
     sighash::SighashCache,
 };
 use serde_json::Value;
-use spill::ChannelParams;
+use spill::{ChannelParams, SegwitBackend};
 
 struct Wallet {
     private_key: PrivateKey,
@@ -23,11 +25,14 @@ struct Wallet {
 fn main() {
     let (alice, bob) = load_wallets();
 
+    let backend = SegwitBackend::new();
+
     let ch_params = ChannelParams::new(
         alice.public_key,
         bob.public_key,
-        Amount::from_int_btc(1),
-        Sequence::from_height(6),
+        Amount::from_int_btc(1_u16),
+        relative::LockTime::from_height(6),
+        backend,
     )
     .unwrap();
 
@@ -43,8 +48,8 @@ fn main() {
     let funding_tx_hex = serialize_hex(&funding_tx);
     let funding_tx_id = funding_tx.compute_txid();
 
-    println!("{}", funding_tx_hex);
-    println!("{}", funding_tx_id);
+    println!("funding_tx: {}", funding_tx_hex);
+    println!("funding_txid: {}", funding_tx_id);
 
     let funding_outpoint = OutPoint {
         txid: funding_tx_id,
@@ -56,7 +61,10 @@ fn main() {
         .unwrap();
 
     let mut psbt = ch
-        .next_payment(Amount::from_sat(1000), Amount::from_sat(1000))
+        .next_payment(
+            Amount::from_sat(1000).unwrap(),
+            Amount::from_sat(1000).unwrap(),
+        )
         .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
@@ -65,7 +73,10 @@ fn main() {
     ch.apply_payment(&psbt).unwrap();
 
     let mut psbt = ch
-        .next_payment(Amount::from_sat(4000), Amount::from_sat(1000))
+        .next_payment(
+            Amount::from_sat(4000).unwrap(),
+            Amount::from_sat(1000).unwrap(),
+        )
         .unwrap();
 
     sign_payment_tx(&alice, &mut psbt);
@@ -81,8 +92,8 @@ fn main() {
     let payment_tx_hex = serialize_hex(&payment_tx);
     let payment_tx_id = payment_tx.compute_txid();
 
-    println!("{}", payment_tx_hex);
-    println!("{}", payment_tx_id);
+    println!("payment_tx: {}", payment_tx_hex);
+    println!("payment_txid: {}", payment_tx_id);
 
     // make refund tx for Alice
     let mut psbt = ch.refund_psbt();
@@ -95,8 +106,8 @@ fn main() {
     let refund_tx_hex = serialize_hex(&refund_tx);
     let refund_tx_id = refund_tx.compute_txid();
 
-    println!("{}", refund_tx_hex);
-    println!("{}", refund_tx_id);
+    println!("refund_tx: {}", refund_tx_hex);
+    println!("refund_txid: {}", refund_tx_id);
 }
 
 fn sign_refund_tx(signer: &Wallet, psbt: &mut Psbt) {
@@ -105,13 +116,17 @@ fn sign_refund_tx(signer: &Wallet, psbt: &mut Psbt) {
 
     let mut cache = SighashCache::new(&psbt.unsigned_tx);
     let sighash = cache
-        .p2wsh_signature_hash(0, witness_script, witness_utxo.value, EcdsaSighashType::All)
+        .p2wsh_signature_hash(
+            0,
+            witness_script,
+            witness_utxo.amount,
+            EcdsaSighashType::All,
+        )
         .unwrap();
 
-    let msg = Message::from_digest_slice(&sighash[..]).unwrap();
+    let msg = Message::from_digest(sighash.to_byte_array());
 
-    let curve = secp256k1::Secp256k1::new();
-    let sig = curve.sign_ecdsa(&msg, &signer.private_key.inner);
+    let sig = secp256k1::ecdsa::sign(msg, &signer.private_key.inner);
 
     let sig = Signature {
         signature: sig,
@@ -122,15 +137,15 @@ fn sign_refund_tx(signer: &Wallet, psbt: &mut Psbt) {
 }
 
 fn complete_refund_tx(payer: &Wallet, psbt: &mut Psbt) {
-    let fee = Amount::from_sat(1000);
+    let fee = Amount::from_sat(1000).unwrap();
 
     let txout = TxOut {
-        value: Amount::from_int_btc(1) - fee,
+        amount: (Amount::from_int_btc(1_u16) - fee).unwrap(),
         script_pubkey: payer.address.script_pubkey(),
     };
 
     psbt.outputs.push(Output::default());
-    psbt.unsigned_tx.output.push(txout);
+    psbt.unsigned_tx.outputs.push(txout);
 }
 
 fn sign_payment_tx(signer: &Wallet, psbt: &mut Psbt) {
@@ -139,13 +154,17 @@ fn sign_payment_tx(signer: &Wallet, psbt: &mut Psbt) {
 
     let mut cache = SighashCache::new(&psbt.unsigned_tx);
     let sighash = cache
-        .p2wsh_signature_hash(0, witness_script, witness_utxo.value, EcdsaSighashType::All)
+        .p2wsh_signature_hash(
+            0,
+            witness_script,
+            witness_utxo.amount,
+            EcdsaSighashType::All,
+        )
         .unwrap();
 
-    let msg = Message::from_digest_slice(&sighash[..]).unwrap();
+    let msg = Message::from_digest(sighash.to_byte_array());
 
-    let curve = secp256k1::Secp256k1::new();
-    let sig = curve.sign_ecdsa(&msg, &signer.private_key.inner);
+    let sig = secp256k1::ecdsa::sign(msg, &signer.private_key.inner);
 
     let sig = Signature {
         signature: sig,
@@ -175,15 +194,14 @@ fn sign_funding_tx(payer: &Wallet, psbt: &mut Psbt) {
         .p2wpkh_signature_hash(
             0,
             &payer.address.script_pubkey(),
-            payer.utxo_txout.clone().unwrap().value,
+            payer.utxo_txout.clone().unwrap().amount,
             EcdsaSighashType::All,
         )
         .unwrap();
 
-    let msg = secp256k1::Message::from_digest_slice(&sighash[..]).unwrap();
+    let msg = secp256k1::Message::from_digest(sighash.to_byte_array());
 
-    let curve = secp256k1::Secp256k1::new();
-    let sig = curve.sign_ecdsa(&msg, &payer.private_key.inner);
+    let sig = secp256k1::ecdsa::sign(msg, &payer.private_key.inner);
 
     let sig = Signature {
         signature: sig,
@@ -207,24 +225,24 @@ fn complete_funding_tx(payer: &Wallet, psbt: &mut Psbt) {
     };
 
     psbt.inputs.push(input);
-    psbt.unsigned_tx.input.push(txin);
+    psbt.unsigned_tx.inputs.push(txin);
 
-    let fee = Amount::from_sat(1000);
+    let fee = Amount::from_sat(1000).unwrap();
 
     let txout = TxOut {
-        value: payer.utxo_txout.clone().unwrap().value - (psbt.unsigned_tx.output[0].value + fee),
+        amount: (payer.utxo_txout.clone().unwrap().amount
+            - (psbt.unsigned_tx.outputs[0].amount + fee))
+            .unwrap(),
         script_pubkey: payer.address.script_pubkey(),
     };
 
     psbt.outputs.push(Output::default());
-    psbt.unsigned_tx.output.push(txout);
+    psbt.unsigned_tx.outputs.push(txout);
 }
 
 fn load_wallets() -> (Wallet, Wallet) {
     let data = fs::read_to_string("wallets.json").unwrap();
     let wallets: Value = serde_json::from_str(&data).unwrap();
-
-    let curve = secp256k1::Secp256k1::new();
 
     let alice_private_key_hex = wallets["alice"]["private_key"].as_str().unwrap();
     let alice_secret_key = SecretKey::from_str(alice_private_key_hex).unwrap();
@@ -233,12 +251,13 @@ fn load_wallets() -> (Wallet, Wallet) {
         network: bitcoin::NetworkKind::Test,
         inner: alice_secret_key,
     };
-    let alice_public_key = alice_private_key.public_key(&curve);
+    let alice_public_key = alice_private_key.public_key();
 
     let utxo_outpoint =
         OutPoint::from_str(wallets["alice"]["utxo_outpoint"].as_str().unwrap()).unwrap();
     let utxo_txout = TxOut {
-        value: Amount::from_sat(wallets["alice"]["utxo_txout"]["value"].as_u64().unwrap()),
+        amount: Amount::from_sat(wallets["alice"]["utxo_txout"]["value"].as_u64().unwrap())
+            .unwrap(),
         script_pubkey: ScriptBuf::from_hex(
             wallets["alice"]["utxo_txout"]["script_pubkey_hex"]
                 .as_str()
@@ -247,11 +266,11 @@ fn load_wallets() -> (Wallet, Wallet) {
         .unwrap(),
     };
 
-    let alice_address = Address::p2wpkh(&alice_public_key.try_into().unwrap(), Network::Signet);
+    let alice_address = Address::p2wpkh(alice_public_key.try_into().unwrap(), Network::Regtest);
 
     let check = Address::from_str(wallets["alice"]["address"].as_str().unwrap())
         .unwrap()
-        .require_network(Network::Signet)
+        .require_network(Network::Regtest)
         .unwrap();
 
     assert!(
@@ -274,13 +293,13 @@ fn load_wallets() -> (Wallet, Wallet) {
         network: bitcoin::NetworkKind::Test,
         inner: bob_secret_key,
     };
-    let bob_public_key = bob_private_key.public_key(&curve);
+    let bob_public_key = bob_private_key.public_key();
 
-    let bob_address = Address::p2wpkh(&bob_public_key.try_into().unwrap(), Network::Signet);
+    let bob_address = Address::p2wpkh(bob_public_key.try_into().unwrap(), Network::Regtest);
 
     let check = Address::from_str(wallets["bob"]["address"].as_str().unwrap())
         .unwrap()
-        .require_network(Network::Signet)
+        .require_network(Network::Regtest)
         .unwrap();
 
     assert!(

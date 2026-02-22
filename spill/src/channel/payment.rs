@@ -1,8 +1,10 @@
 use bitcoin::{
-    Amount, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, absolute, transaction,
+    Amount, Psbt, Sequence, Transaction, TxIn, TxOut, Witness, WitnessProgram, absolute,
+    script::{ScriptBuf, ScriptPubKeyBufExt},
+    transaction,
 };
 
-use crate::{Channel, PaymentError, SpillError};
+use crate::{Channel, PaymentError, SpillError, channel::backend::ChannelBackend};
 
 /// Information about a verified payment.
 ///
@@ -18,7 +20,7 @@ pub struct PaymentInfo {
     pub fee: Amount,
 }
 
-impl Channel {
+impl<B: ChannelBackend + Clone> Channel<B> {
     /// Constructs a PSBT for the next payment in the channel.
     ///
     /// The returned PSBT represents a payment from the payer to the payee
@@ -33,19 +35,21 @@ impl Channel {
     /// # Details
     ///
     /// - The PSBT contains a single input referencing the channel's funding outpoint.
-    /// - The input's witness UTXO and witness script are set according to the
-    ///   channel's funding transaction.
+    /// - The input's witness UTXO is set according to the channel's funding transaction.
     /// - The PSBT has two outputs:
     ///     1. The payment to the payee (cumulative amount).
     ///     2. The change back to the payer.
-    /// - The transaction has version 2, sequence `MAX`, and locktime 0.
+    /// - The transaction has version 2, sequence `MAX`, and lock time 0.
     pub fn next_payment(&self, amount: Amount, fee: Amount) -> Result<Psbt, SpillError> {
-        let required = amount + self.sent + fee;
+        let required: Amount = (amount + self.sent + fee)
+            .into_result()
+            .map_err(|_| PaymentError::AmountOverflow)?;
         if required > self.params.capacity {
-            return Err(SpillError::Payment(PaymentError::ExceedsCapacity {
+            return Err(PaymentError::ExceedsCapacity {
                 available: self.params.capacity,
                 required,
-            }));
+            }
+            .into());
         }
 
         let input = TxIn {
@@ -56,28 +60,34 @@ impl Channel {
         };
 
         let payment = TxOut {
-            value: amount + self.sent,
-            script_pubkey: ScriptBuf::new_p2wpkh(&self.params.payee.wpubkey_hash()?),
+            amount: (amount + self.sent)
+                .into_result()
+                .map_err(|_| PaymentError::AmountOverflow)?,
+            script_pubkey: ScriptBuf::new_witness_program(&WitnessProgram::p2wpkh(
+                self.params.payee.try_into()?,
+            )),
         };
 
         let change = TxOut {
-            value: self.params.capacity - required,
-            script_pubkey: ScriptBuf::new_p2wpkh(&self.params.payer.wpubkey_hash()?),
+            amount: (self.params.capacity - required)
+                .into_result()
+                .expect("verify_payment_psbt: internal invariant violated (Amount calculation must be valid)"),
+            script_pubkey: ScriptBuf::new_witness_program(&WitnessProgram::p2wpkh(self.params.payer.try_into()?)),
         };
 
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![input],
-            output: vec![payment, change],
+            inputs: vec![input],
+            outputs: vec![payment, change],
         };
 
         let mut psbt = Psbt::from_unsigned_tx(tx)
             .expect("next_payment: internal invariant violated (tx must be unsigned)");
 
-        psbt.inputs[0].witness_script = Some(self.params.funding_script.clone());
-
-        psbt.inputs[0].witness_utxo = Some(self.funding_utxo.clone());
+        self.params
+            .backend
+            .populate_payment_psbt(&mut psbt, self.funding_utxo.clone());
 
         Ok(psbt)
     }

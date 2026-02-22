@@ -13,8 +13,8 @@ pub enum ConfigError {
     InvalidCapacity,
     /// A provided public key is not in compressed form.
     UncompressedPublicKey,
-    /// The refund locktime is invalid (zero).
-    InvalidRefundLocktime,
+    /// The refund lock time is invalid (zero).
+    InvalidRefundLockTime,
 }
 
 /// Errors that can occur when constructing or verifying the funding transaction.
@@ -47,7 +47,7 @@ pub enum PaymentError {
     MultipleInputs,
     /// The payment PSBT is missing an input.
     MissingInput,
-    /// The outpoint eferenced by the payment does not match the funding outpoint.
+    /// The outpoint referenced by the payment does not match the funding outpoint.
     FundingOutpointMismatch,
     /// The witness UTXO is missing from the PSBT input.
     MissingWitnessUtxo,
@@ -57,10 +57,12 @@ pub enum PaymentError {
     MissingWitnessScript,
     /// The witness script does not match the expected funding script.
     WitnessScriptMismatch,
+    /// The script_pubkey does not match the expected funding script_pubkey.
+    ScriptPubKeyMismatch,
     /// The input sequence number is invalid (expected MAX).
     InvalidSequence,
-    /// The locktime is non-zero, unexpected for payment transactions.
-    NonZeroLocktime,
+    /// The lock time is non-zero, unexpected for payment transactions.
+    NonZeroLockTime,
     /// The payee output is missing from the PSBT outputs.
     MissingPayeeOutput,
     /// The total output decreases (negative payment).
@@ -73,6 +75,8 @@ pub enum PaymentError {
     InvalidSighash,
     /// The provided signature is invalid.
     InvalidSignature,
+    /// Amount overflowed
+    AmountOverflow,
 }
 
 /// Errors that can occur when finalizing channel transactions.
@@ -112,17 +116,41 @@ impl From<UncompressedPublicKeyError> for SpillError {
     }
 }
 
+impl From<ConfigError> for SpillError {
+    fn from(value: ConfigError) -> Self {
+        Self::Config(value)
+    }
+}
+
+impl From<FundingError> for SpillError {
+    fn from(value: FundingError) -> Self {
+        Self::Funding(value)
+    }
+}
+
+impl From<PaymentError> for SpillError {
+    fn from(value: PaymentError) -> Self {
+        Self::Payment(value)
+    }
+}
+
+impl From<FinalizeError> for SpillError {
+    fn from(value: FinalizeError) -> Self {
+        Self::Finalize(value)
+    }
+}
+
 impl fmt::Display for SpillError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SpillError::Config(config_error) => match config_error {
                 ConfigError::InvalidCapacity => write!(f, "channel capacity must be non-zero."),
                 ConfigError::UncompressedPublicKey => write!(f, "public key must be compressed"),
-                ConfigError::InvalidRefundLocktime => {
-                    write!(f, "invalid refund locktime (must be greater than 0)")
+                ConfigError::InvalidRefundLockTime => {
+                    write!(f, "invalid refund lock time (must be greater than 0)")
                 }
             },
-            SpillError::Funding(fundin_error) => match fundin_error {
+            SpillError::Funding(funding_error) => match funding_error {
                 FundingError::TxidMismatch => {
                     write!(f, "funding transaction does not match expected id")
                 }
@@ -176,8 +204,8 @@ impl fmt::Display for SpillError {
                 PaymentError::InvalidSequence => {
                     write!(f, "payment transaction sequence is not MAX")
                 }
-                PaymentError::NonZeroLocktime => {
-                    write!(f, "payment transaction uses non-final locktime")
+                PaymentError::NonZeroLockTime => {
+                    write!(f, "payment transaction uses non-final lock time")
                 }
                 PaymentError::MissingPayeeOutput => {
                     write!(f, "payment transaction missing output to payee")
@@ -200,6 +228,11 @@ impl fmt::Display for SpillError {
                 PaymentError::InvalidSignature => {
                     write!(f, "payment transaction signature is invalid")
                 }
+                PaymentError::AmountOverflow => write!(f, "Amount operation error"),
+                PaymentError::ScriptPubKeyMismatch => write!(
+                    f,
+                    "payment transaction input script_pubkey does not match expected"
+                ),
             },
             SpillError::Finalize(finalize_error) => match finalize_error {
                 FinalizeError::MissingSignature { public_key } => {

@@ -41,5 +41,6 @@ mod channel;
 mod error;
 
 pub use channel::PaymentInfo;
+pub use channel::backend::SegwitBackend;
 pub use channel::{Channel, ChannelParams};
 pub use error::{ConfigError, FinalizeError, FundingError, PaymentError, SpillError};

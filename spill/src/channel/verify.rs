@@ -1,12 +1,10 @@
 use crate::{
-    Channel, ChannelParams, FundingError, PaymentError, SpillError, channel::payment::PaymentInfo,
+    Channel, ChannelParams, FundingError, PaymentError, SpillError,
+    channel::{backend::ChannelBackend, payment::PaymentInfo},
 };
-use bitcoin::{
-    Amount, EcdsaSighashType, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, absolute::LockTime,
-    secp256k1, sighash::SighashCache,
-};
+use bitcoin::{Amount, NumOpResult, OutPoint, Psbt, Sequence, Transaction, absolute::LockTime};
 
-impl ChannelParams {
+impl<B: ChannelBackend + Clone> ChannelParams<B> {
     /// Verifies a funding transaction against the channel parameters.
     ///
     /// Ensures that the provided transaction and outpoint match the channel's
@@ -24,23 +22,22 @@ impl ChannelParams {
         &self,
         tx: &Transaction,
         outpoint: OutPoint,
-    ) -> Result<Channel, SpillError> {
+    ) -> Result<Channel<B>, SpillError> {
         if tx.compute_txid() != outpoint.txid {
-            return Err(SpillError::Funding(FundingError::TxidMismatch));
+            return Err(FundingError::TxidMismatch.into());
         }
 
         let output = tx
-            .output
+            .outputs
             .get(outpoint.vout as usize)
-            .ok_or(SpillError::Funding(FundingError::OutputNotFound))?;
+            .ok_or(FundingError::OutputNotFound)?;
 
-        if output.value != self.capacity {
-            return Err(SpillError::Funding(FundingError::ValueMismatch));
+        if output.amount != self.capacity {
+            return Err(FundingError::ValueMismatch.into());
         }
 
-        let expected_script = ScriptBuf::new_p2wsh(&self.funding_script.wscript_hash());
-        if output.script_pubkey != expected_script {
-            return Err(SpillError::Funding(FundingError::ScriptMismatch));
+        if output.script_pubkey != self.script_pubkey {
+            return Err(FundingError::ScriptMismatch.into());
         }
 
         Ok(Channel {
@@ -52,7 +49,7 @@ impl ChannelParams {
     }
 }
 
-impl Channel {
+impl<B: ChannelBackend + Clone> Channel<B> {
     /// Verifies a payment PSBT against the channel state.
     ///
     /// Ensures that the provided PSBT correctly represents a payment from the
@@ -71,111 +68,96 @@ impl Channel {
     /// - `MissingWitnessScript`: The input lacks a witness script.
     /// - `WitnessScriptMismatch`: The witness script does not match the channel funding script.
     /// - `InvalidSequence`: The input sequence is not MAX.
-    /// - `NonZeroLocktime`: The transaction locktime is not zero.
+    /// - `NonZeroLockTime`: The transaction lock time is not zero.
     /// - `MissingPayeeOutput`: No output exists for the payee.
     /// - `PaymentNotIncremental`: The payment does not increase the cumulative amount.
     /// - `OutputsExceedFundingAmount`: The total outputs exceed the channel capacity.
     /// - `MissingSignature`: No signature from the payer is present.
     /// - `InvalidSighash`: The signature sighash type is unsupported (must be ALL or ALL|ANYONECANPAY).
     /// - `InvalidSignature`: The payer's signature is invalid.
+    /// - `AmountOverflow`: Amount operation errored.
+    /// - `ScriptPubKeyMismatch`: The input's script_pubkey does not match the channel funding
+    ///   script_pubkey.
     pub fn verify_payment_psbt(&self, psbt: &Psbt) -> Result<PaymentInfo, SpillError> {
         if psbt.inputs.len() > 1 {
-            return Err(SpillError::Payment(PaymentError::MultipleInputs));
+            return Err(PaymentError::MultipleInputs.into());
         }
 
         let outpoint = psbt
             .unsigned_tx
-            .input
+            .inputs
             .first()
-            .ok_or(SpillError::Payment(PaymentError::MissingInput))?
+            .ok_or(PaymentError::MissingInput)?
             .previous_output;
 
         if outpoint != self.funding_outpoint {
-            return Err(SpillError::Payment(PaymentError::FundingOutpointMismatch));
+            return Err(PaymentError::FundingOutpointMismatch.into());
         }
 
         let witness_utxo = psbt.inputs[0]
             .witness_utxo
             .as_ref()
-            .ok_or(SpillError::Payment(PaymentError::MissingWitnessUtxo))?;
+            .ok_or(PaymentError::MissingWitnessUtxo)?;
 
         if witness_utxo != &self.funding_utxo {
-            return Err(SpillError::Payment(PaymentError::WitnessUtxoMismatch));
+            return Err(PaymentError::WitnessUtxoMismatch.into());
         }
 
-        let witness_script = psbt.inputs[0]
-            .witness_script
-            .as_ref()
-            .ok_or(SpillError::Payment(PaymentError::MissingWitnessScript))?;
-
-        if witness_script != &self.params.funding_script {
-            return Err(SpillError::Payment(PaymentError::WitnessScriptMismatch));
+        if witness_utxo.script_pubkey != self.params.script_pubkey {
+            return Err(PaymentError::ScriptPubKeyMismatch.into());
         }
 
-        let sequence = psbt.unsigned_tx.input[0].sequence;
+        let sequence = psbt.unsigned_tx.inputs[0].sequence;
 
         if sequence != Sequence::MAX {
-            return Err(SpillError::Payment(PaymentError::InvalidSequence));
+            return Err(PaymentError::InvalidSequence.into());
         }
 
-        let locktime = psbt.unsigned_tx.lock_time;
+        let lock_time = psbt.unsigned_tx.lock_time;
 
-        if locktime != LockTime::ZERO {
-            return Err(SpillError::Payment(PaymentError::NonZeroLocktime));
+        if lock_time != LockTime::ZERO {
+            return Err(PaymentError::NonZeroLockTime.into());
         }
 
-        let payee_script = ScriptBuf::new_p2wpkh(&self.params.payee.wpubkey_hash()?);
+        let payee_script = self.params.backend.payee_script(&self.params.payee)?;
 
         let new_payment_amount = psbt
             .unsigned_tx
-            .output
+            .outputs
             .iter()
             .find(|o| o.script_pubkey == payee_script)
-            .ok_or(SpillError::Payment(PaymentError::MissingPayeeOutput))?
-            .value;
+            .ok_or(PaymentError::MissingPayeeOutput)?
+            .amount;
 
         if new_payment_amount <= self.sent {
-            return Err(SpillError::Payment(PaymentError::PaymentNotIncremental));
+            return Err(PaymentError::PaymentNotIncremental.into());
         }
 
-        let total_output: Amount = psbt.unsigned_tx.output.iter().map(|o| o.value).sum();
+        let total_output: Amount = psbt
+            .unsigned_tx
+            .outputs
+            .iter()
+            .map(|o| o.amount)
+            .fold(NumOpResult::Valid(Amount::ZERO), |acc, item| acc + item)
+            .into_result()
+            .map_err(|_| PaymentError::AmountOverflow)?;
 
         if total_output > self.params.capacity {
-            return Err(SpillError::Payment(
-                PaymentError::OutputsExceedFundingAmount,
-            ));
+            return Err(PaymentError::OutputsExceedFundingAmount.into());
         }
 
-        let sig = psbt.inputs[0]
-            .partial_sigs
-            .get(&self.params.payer)
-            .ok_or(SpillError::Payment(PaymentError::MissingSignature))?;
-
-        if sig.sighash_type != EcdsaSighashType::All
-            && sig.sighash_type == EcdsaSighashType::AllPlusAnyoneCanPay
-        {
-            return Err(SpillError::Payment(PaymentError::InvalidSighash));
-        }
-
-        let mut cache = SighashCache::new(&psbt.unsigned_tx);
-        let sighash = cache
-            .p2wsh_signature_hash(0, witness_script, self.params.capacity, sig.sighash_type)
-            .expect("verify_payment_psbt: internal invariant (sign input 0)");
-
-        let msg = secp256k1::Message::from_digest_slice(&sighash[..])
-            .expect("verify_payment_psbt: internal invariant (sighash size)");
-
-        if secp256k1::Secp256k1::verification_only()
-            .verify_ecdsa(&msg, &sig.signature, &self.params.payer.inner)
-            .is_err()
-        {
-            return Err(SpillError::Payment(PaymentError::InvalidSignature));
-        }
+        self.params
+            .backend
+            .verify_payment(psbt, &self.params.payer, self.params.capacity)?;
 
         Ok(PaymentInfo {
             total: new_payment_amount,
-            current: new_payment_amount - self.sent,
-            fee: self.params.capacity - total_output,
+            current: (new_payment_amount - self.sent)
+                .into_result()
+                .expect("verify_payment_psbt: internal invariant violated (Amount calculation must be valid)"),
+            fee: (self.params.capacity - total_output)
+                .into_result()
+                .expect("verify_payment_psbt: internal invariant violated (Amount calculation must be valid)"),
         })
     }
 }
