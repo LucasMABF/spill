@@ -1,5 +1,6 @@
 use bitcoin::{
-    Amount, OutPoint, PublicKey, ScriptPubKeyTag, TxOut, primitives::relative, script::ScriptBuf,
+    Amount, OutPoint, PublicKey, ScriptPubKeyBuf, ScriptPubKeyTag, TxOut, primitives::relative,
+    script::ScriptBuf,
 };
 
 use crate::{ConfigError, SpillError, channel::backend::ChannelBackend};
@@ -83,7 +84,7 @@ impl<B: ChannelBackend + Clone> ChannelParams<B> {
             return Err(ConfigError::InvalidCapacity.into());
         }
 
-        if !(payer.compressed && payee.compressed) {
+        if !(payer.compressed() && payee.compressed()) {
             return Err(ConfigError::UncompressedPublicKey.into());
         }
 
@@ -104,5 +105,9 @@ impl<B: ChannelBackend + Clone> ChannelParams<B> {
             refund_lock_time,
             backend,
         })
+    }
+
+    pub fn script_pubkey(&self) -> &ScriptPubKeyBuf {
+        &self.script_pubkey
     }
 }

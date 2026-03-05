@@ -126,7 +126,7 @@ impl ChannelBackend for SegwitBackend {
 
         let msg = secp256k1::Message::from_digest(sighash.to_byte_array());
 
-        if secp256k1::ecdsa::verify(&sig.signature, msg, &payer.inner).is_err() {
+        if secp256k1::ecdsa::verify(&sig.signature, msg, &payer.to_inner()).is_err() {
             return Err(PaymentError::InvalidSignature.into());
         }
 
@@ -145,7 +145,7 @@ impl ChannelBackend for SegwitBackend {
         sig_payer_bytes.push(sig_payer.sighash_type.to_u32() as u8);
         witness.push(sig_payer_bytes);
 
-        witness.push(vec![0]); // OP_FALSE take OP_ELSE branch
+        witness.push(vec![]); // OP_FALSE take OP_ELSE branch
 
         let witness_script = input
             .witness_script
